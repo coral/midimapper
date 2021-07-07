@@ -1,9 +1,8 @@
 use anyhow::{anyhow, Result};
-use crossbeam_channel::{select, unbounded};
 use log::error;
 use midir::{Ignore, MidiInput, MidiInputConnection};
 use std::collections::HashMap;
-use std::{error::Error, u8};
+use std::u8;
 
 //Exports for lib
 mod mapping;
