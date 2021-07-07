@@ -1,3 +1,4 @@
+use anyhow::{anyhow, Result};
 use crossbeam_channel::{select, unbounded};
 use log::error;
 use midir::{Ignore, MidiInput, MidiInputConnection};
@@ -9,7 +10,7 @@ mod mapping;
 pub use mapping::Mapping;
 
 pub struct MIDIMapper {
-    ch: Vec<crossbeam_channel::Sender<mapping::Feature>>,
+    ch: Vec<crossbeam_channel::Sender<FeatureResult>>,
     input: Option<MidiInputConnection<()>>,
     mapping: HashMap<String, FlatFeature>,
 }
@@ -29,14 +30,15 @@ enum FeatureType {
     Fader,
     Encoder,
 }
-enum FeatureResult {
-    Button(String, u8),
-    Fader(String, u8, u8),
-    Encoder,
+
+#[derive(Debug, Clone)]
+pub enum FeatureResult {
+    Button(String),
+    Value(String, u8),
 }
 
 impl MIDIMapper {
-    pub fn new(mapping: mapping::Mapping) -> Result<MIDIMapper, Box<dyn Error>> {
+    pub fn new(mapping: mapping::Mapping) -> Result<MIDIMapper> {
         Ok(MIDIMapper {
             ch: Vec::new(),
             input: None,
@@ -44,7 +46,7 @@ impl MIDIMapper {
         })
     }
 
-    pub fn get_channel(&mut self) -> crossbeam_channel::Receiver<mapping::Feature> {
+    pub fn get_channel(&mut self) -> crossbeam_channel::Receiver<FeatureResult> {
         let (s, r) = crossbeam_channel::unbounded();
         self.ch.push(s);
 
@@ -92,7 +94,7 @@ impl MIDIMapper {
         channel.to_string() + "_" + &message.to_string()
     }
 
-    pub fn run(&mut self, midi_port: usize) -> Result<(), Box<dyn Error>> {
+    pub fn run(&mut self, midi_port: usize) -> Result<()> {
         let (s, r) = crossbeam_channel::unbounded();
 
         let mut input = MidiInput::new("midimapper")?;
@@ -100,7 +102,7 @@ impl MIDIMapper {
 
         let in_ports = input.ports();
         let in_port = match in_ports.len() {
-            0 => return Err("no input port found".into()),
+            0 => return Err(anyhow!("No input port found")),
             _ => &in_ports[midi_port],
         };
 
@@ -118,7 +120,14 @@ impl MIDIMapper {
                 _ => {}
             },
             (),
-        )?;
+        );
+
+        let conn_in = match conn_in {
+            Ok(v) => v,
+            Err(e) => {
+                return Err(anyhow!("ugh: {}", e));
+            }
+        };
 
         self.input = Some(conn_in);
 
@@ -135,7 +144,21 @@ impl MIDIMapper {
                 .mapping
                 .get(&MIDIMapper::keyhasher(msg.channel, msg.message))
             {
-                Some(f) => {}
+                Some(f) => {
+                    let event = match f.kind {
+                        FeatureType::Button => FeatureResult::Button(f.feature.name.clone()),
+                        FeatureType::Encoder => {
+                            FeatureResult::Value(f.feature.name.clone(), msg.value)
+                        }
+                        FeatureType::Fader => {
+                            FeatureResult::Value(f.feature.name.clone(), msg.value)
+                        }
+                    };
+
+                    for recv in &self.ch {
+                        recv.try_send(event.clone());
+                    }
+                }
                 None => {}
             }
         }
