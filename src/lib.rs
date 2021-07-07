@@ -3,13 +3,14 @@ use log::error;
 use midir::{Ignore, MidiInput, MidiInputConnection};
 use std::collections::HashMap;
 use std::u8;
+use tokio::sync::mpsc;
 
 //Exports for lib
 mod mapping;
 pub use mapping::Mapping;
 
 pub struct MIDIMapper {
-    ch: Vec<crossbeam_channel::Sender<FeatureResult>>,
+    ch: Vec<mpsc::Sender<FeatureResult>>,
     input: Option<MidiInputConnection<()>>,
     mapping: HashMap<String, FlatFeature>,
 }
@@ -45,8 +46,8 @@ impl MIDIMapper {
         })
     }
 
-    pub fn get_channel(&mut self) -> crossbeam_channel::Receiver<FeatureResult> {
-        let (s, r) = crossbeam_channel::unbounded();
+    pub fn get_channel(&mut self) -> mpsc::Receiver<FeatureResult> {
+        let (s, r) = mpsc::channel(32);
         self.ch.push(s);
 
         r
@@ -93,8 +94,8 @@ impl MIDIMapper {
         channel.to_string() + "_" + &message.to_string()
     }
 
-    pub fn run(&mut self, midi_port: usize) -> Result<()> {
-        let (s, r) = crossbeam_channel::unbounded();
+    pub async fn run(&mut self, midi_port: usize) -> Result<()> {
+        let (s, mut r) = mpsc::unbounded_channel();
 
         let mut input = MidiInput::new("midimapper")?;
         input.ignore(Ignore::None);
@@ -131,12 +132,9 @@ impl MIDIMapper {
         self.input = Some(conn_in);
 
         loop {
-            let msg = match r.recv() {
-                Ok(msg) => msg,
-                Err(e) => {
-                    error!("lol?");
-                    continue;
-                }
+            let msg = match r.recv().await {
+                Some(v) => v,
+                None => continue,
             };
 
             match self
